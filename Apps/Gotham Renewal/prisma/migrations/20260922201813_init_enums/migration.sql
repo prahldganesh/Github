@@ -1,0 +1,17 @@
+-- CreateEnum
+CREATE TYPE "OrderStatus" AS ENUM ('NEW', 'CONFIRMED', 'PACKED', 'SHIPPED', 'DELIVERED', 'CANCELLED');
+
+-- CreateEnum
+CREATE TYPE "PaymentStatus" AS ENUM ('PENDING', 'PAID', 'COD', 'FAILED', 'REFUNDED');
+
+-- CreateEnum
+CREATE TYPE "PaymentMethod" AS ENUM ('COD', 'RAZORPAY');
+
+-- CreateEnum
+CREATE TYPE "NotificationStatus" AS ENUM ('PENDING', 'SENT', 'FAILED');
+
+-- CreateEnum
+CREATE TYPE "NotificationChannel" AS ENUM ('WHATSAPP');
+
+-- CreateEnum
+CREATE TYPE "NotificationType" AS ENUM ('ORDER_ALERT_BUSINESS', 'ORDER_CONFIRMED_CUSTOMER', 'ORDER_PACKED_CUSTOMER', 'ORDER_SHIPPED_CUSTOMER', 'ORDER_DELIVERED_CUSTOMER');

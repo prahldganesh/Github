@@ -1,0 +1,392 @@
+// Gotham Renewal — database schema
+//
+// Phase 1 ships the enums only. They are the vocabulary the whole application
+// is written against (order states, payment states), and defining them here
+// means the database, the TypeScript types and the admin UI all agree from the
+// start. Product/order tables arrive in Phase 2 and Phase 6.
+//
+// Money convention: every monetary column is an Int of paise (1 rupee = 100
+// paise). Never Float/Decimal-for-rupees. See src/lib/money.ts.
+
+generator client {
+  // Prisma 7 generator. Emits a plain TypeScript client into the repo, giving
+  // us an inspectable, fast-bundling client instead of a hidden runtime.
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // The connection URL lives in prisma.config.ts (Prisma 7 convention).
+}
+
+enum OrderStatus {
+  NEW
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  COD
+  FAILED
+  REFUNDED
+}
+
+/// The lifecycle of a refund attempt.
+///
+/// Distinct from PaymentStatus.REFUNDED: that is the ORDER's payment state,
+/// this is the attempt's own state. They move independently - an attempt can
+/// fail leaving the order still PAID, which is what makes retrying safe.
+enum RefundStatus {
+  /// The attempt exists locally but has not been sent to the provider.
+  PENDING
+  /// Sent to the provider, outcome not yet confirmed. This is the state a
+  /// timeout leaves behind, and it must NOT be blindly retried - reconcile
+  /// against the provider first.
+  PROCESSING
+  /// The provider confirmed the refund.
+  SUCCEEDED
+  /// The provider refused it, or every attempt failed permanently.
+  FAILED
+}
+
+enum PaymentMethod {
+  COD
+  RAZORPAY
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum NotificationChannel {
+  WHATSAPP
+}
+
+enum NotificationType {
+  // To the business owner: a new order arrived.
+  ORDER_ALERT_BUSINESS
+  // To the customer. Not sent in the initial build; the values exist so the
+  // notification layer does not need a schema change to add them later.
+  ORDER_CONFIRMED_CUSTOMER
+  ORDER_PACKED_CUSTOMER
+  ORDER_SHIPPED_CUSTOMER
+  ORDER_DELIVERED_CUSTOMER
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: catalogue
+// ---------------------------------------------------------------------------
+
+model Product {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String   @db.VarChar(200)
+  slug        String   @unique @db.VarChar(200)
+  description String   @default("") @db.Text
+  // Money: integer paise. See src/lib/money.ts.
+  price       Int      @db.Integer
+  stock       Int      @default(0) @db.Integer
+  imageUrl    String?  @map("image_url") @db.Text
+  // Inactive products stay in the database so historical orders that reference
+  // them remain intact. "Disabled" is a flag, never a delete.
+  active      Boolean  @default(true)
+  /// Optimistic-concurrency version, for edits that must not silently overwrite
+  /// a concurrent change.
+  ///
+  /// Bumped by EVERY write to stock - both the admin's absolute set and the
+  /// customer purchase path - so that a stale edit is detected rather than
+  /// silently winning. Concretely: an admin loads stock 10 (version 5), a
+  /// customer buys one unit (version becomes 6), the admin saves "8" against
+  /// version 5, the guarded update matches zero rows, and the admin is told the
+  /// product changed. Without this the admin's stale 8 would quietly erase the
+  /// sale.
+  ///
+  /// This does NOT replace the overselling guard. Reserving stock is still a
+  /// conditional `UPDATE ... WHERE stock >= qty`, which is what makes two
+  /// simultaneous purchases safe; the version is a separate concern (edit
+  /// conflicts), and the two coexist because both are part of the same atomic
+  /// statement.
+  version     Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  orderItems OrderItem[]
+
+  @@index([active])
+  @@index([createdAt])
+  @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: orders
+// ---------------------------------------------------------------------------
+
+model Order {
+  id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // The human-facing reference (e.g. GR-1042). Unique is the backstop for the
+  // counter-based generation in the service.
+  orderNumber   String @unique @map("order_number") @db.VarChar(32)
+
+  customerName  String  @map("customer_name") @db.VarChar(200)
+  customerPhone String  @map("customer_phone") @db.VarChar(20)
+  customerEmail String? @map("customer_email") @db.VarChar(254)
+  address       String  @db.Text
+  city          String  @db.VarChar(100)
+  state         String  @db.VarChar(100)
+  pincode       String  @db.VarChar(10)
+
+  // All money is integer paise, computed server-side and never taken from the
+  // browser. These are frozen once the order is placed.
+  subtotal Int @db.Integer
+  shipping Int @db.Integer
+  total    Int @db.Integer
+
+  paymentMethod PaymentMethod @map("payment_method")
+  paymentStatus PaymentStatus @map("payment_status") @default(PENDING)
+  orderStatus   OrderStatus   @map("order_status") @default(NEW)
+
+  // Set when a Razorpay order is created (Phase 10); the payment id arrives on
+  // the webhook (Phase 11). Nullable-unique: many COD orders hold NULL, which
+  // Postgres allows, but a real id can never repeat.
+  razorpayOrderId   String? @unique @map("razorpay_order_id") @db.VarChar(64)
+  razorpayPaymentId String? @map("razorpay_payment_id") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  items OrderItem[]
+  notifications Notification[]
+  paymentEvents PaymentEvent[]
+  refunds Refund[]
+
+  @@index([orderStatus])
+  @@index([paymentStatus])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+
+  // Nullable so an order item survives even if the product row is later
+  // removed from the catalogue. On delete we RESTRICT, so this may only become
+  // null if a product is hard-deleted deliberately.
+  productId String? @map("product_id") @db.Uuid
+
+  // SNAPSHOT: copied at purchase time. A later rename or reprice of the Product
+  // must never change a historical order. This is the whole reason the columns
+  // are duplicated rather than joined.
+  productName String @map("product_name") @db.VarChar(200)
+  quantity    Int    @db.Integer
+  unitPrice   Int    @map("unit_price") @db.Integer
+  total       Int    @db.Integer
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+/// A named monotonic counter, used to generate gap-free order numbers.
+///
+/// Incremented with `UPDATE ... RETURNING` inside the order transaction, which
+/// takes a row lock: concurrent checkouts serialise on this one row for the
+/// duration of the insert. That is intentional and cheap at this volume - it
+/// buys tidy, gap-free numbering ("why is there no order 47?" has no answer
+/// otherwise). If order throughput ever became a bottleneck, swap to a Postgres
+/// SEQUENCE and accept gaps.
+model Counter {
+  id    String @id @db.VarChar(32)
+  value Int    @default(0)
+
+  @@map("counters")
+}
+
+// ---------------------------------------------------------------------------
+// Transactional outbox
+// ---------------------------------------------------------------------------
+
+/// A durable job: something that must happen *after* a business transaction
+/// commits, but must not be able to fail it.
+///
+/// This is the outbox pattern. The row is inserted INSIDE the same transaction
+/// that creates the order, so "the order exists" and "a notification is owed"
+/// are one atomic fact - there is no window where an order exists with no
+/// record that a notification was due. The sending happens later, in a worker,
+/// reading from this table.
+///
+/// Why this shape rather than calling the WhatsApp API in the request:
+///   - the HTTP request cannot be slow or fail because Meta is down;
+///   - a process crash between "order committed" and "notification sent"
+///     leaves a durable row, so the notification is not lost;
+///   - every attempt is recorded, so a failure is visible and retryable rather
+///     than silent.
+model Notification {
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+
+  channel NotificationChannel @default(WHATSAPP)
+  type    NotificationType
+  status  NotificationStatus  @default(PENDING)
+
+  /// The recipient: our own number for an Order Alert, the customer's for a
+  /// Customer Notification. Stored so the job is self-contained and could be
+  /// retried by a process that never saw the order.
+  recipient String @db.VarChar(20)
+
+  /// The payload to send, as JSON. Captured at enqueue time so a retry sends
+  /// what was intended at the time, not a re-derivation that might have drifted
+  /// (a template change, a renamed product). The worker needs the order table
+  /// for nothing.
+  payload Json
+
+  /// Number of send attempts made. Incremented before each attempt, so a crash
+  /// mid-send still counts as an attempt and cannot loop forever.
+  attempts Int @default(0) @db.Integer
+
+  /// Lease expiry. A worker claims a job by setting this into the future; if
+  /// the worker dies, the lease lapses and another worker may reclaim the job.
+  /// This is what makes an interrupted send recoverable without losing it.
+  lockedAt DateTime? @map("locked_at") @db.Timestamptz(3)
+
+  /// When the next attempt becomes eligible. Set to the future on a retryable
+  /// failure (backoff), so a failing job is not hammered.
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+
+  /// The provider's message id on success, for traceability.
+  providerMessageId String? @map("provider_message_id") @db.VarChar(128)
+
+  /// The last error, truncated. Never contains the access token.
+  lastError String? @map("last_error") @db.Text
+
+  sentAt    DateTime? @map("sent_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// The worker's claim query: pending, due, and not currently leased.
+  @@index([status, nextAttemptAt])
+  /// One job of each type per order. A duplicate enqueue (a retried request, a
+  /// double-submitted form) is refused by the database rather than sending the
+  /// owner two alerts for one order.
+  @@unique([orderId, type])
+  @@index([orderId])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Payment events (webhook idempotency)
+// ---------------------------------------------------------------------------
+
+/// One payment-provider webhook delivery we have accepted.
+///
+/// The unique constraint on (provider, providerEventId) is the idempotency
+/// guarantee, and it is enforced by the DATABASE, not by application logic.
+/// Two concurrent duplicate deliveries both try to INSERT; Postgres lets
+/// exactly one succeed and the other gets a unique violation, which the webhook
+/// handler treats as "already processed, return 200". An application-level
+/// "check then insert" would have a race between the check and the insert, and
+/// would process the same payment twice.
+model PaymentEvent {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId     String @map("order_id") @db.Uuid
+
+  provider String @db.VarChar(32)
+
+  /// The provider's unique id for this event (Razorpay's `x-razorpay-event-id`,
+  /// or a hash of the body when that header is absent).
+  providerEventId String @map("provider_event_id") @db.VarChar(128)
+
+  /// e.g. "payment.captured", "order.paid", "payment.failed".
+  eventType String @map("event_type") @db.VarChar(64)
+
+  /// The raw provider payload, kept for auditing and dispute resolution.
+  payload Json
+
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// THE idempotency constraint. This line is the whole guarantee.
+  @@unique([provider, providerEventId])
+  @@index([orderId])
+  @@map("payment_events")
+}
+
+
+// ---------------------------------------------------------------------------
+// Refunds
+// ---------------------------------------------------------------------------
+
+/// One attempt to refund a payment.
+///
+/// WHY A TABLE AND NOT A COLUMN ON THE ORDER. A refund is an attempt against an
+/// external system that can fail, time out, or succeed after we stopped
+/// listening. Modelling it as a boolean (or a single status field) on the order
+/// would lose that history: a failed attempt followed by a successful retry
+/// would look like one event, and there would be nowhere to record "we sent this
+/// and never learned the outcome".
+///
+/// Rows are append-only in spirit. An attempt's status moves forward
+/// (PENDING -> PROCESSING -> SUCCEEDED/FAILED) but a row is never deleted and a
+/// SUCCEEDED row is never rewritten, so the audit trail survives.
+///
+/// IDEMPOTENCY has two independent layers:
+///
+///   1. THE DATABASE. `idempotencyKey` is UNIQUE, and it is derived
+///      deterministically from the order (`refund:<orderId>`). Two concurrent
+///      admin clicks both try to insert the same key; Postgres lets exactly one
+///      succeed (see `lib/payments/refunds.ts`). That is the same
+///      insert-first pattern the webhook uses, for the same reason: an
+///      application-level "check then act" has a race.
+///   2. THE PROVIDER. Razorpay treats the refund `receipt` as an idempotency
+///      key - a second request with the same receipt is refused with
+///      "Duplicate receipt found". We send the same key as the receipt, so even
+///      if our own guard were bypassed the provider would not double-refund.
+model Refund {
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+
+  provider String @db.VarChar(32)
+  /// The provider's payment id (Razorpay `pay_...`) being refunded.
+  paymentId String @map("payment_id") @db.VarChar(64)
+  /// The provider's refund id, set once the provider has accepted the request.
+  providerRefundId String? @map("provider_refund_id") @db.VarChar(64)
+
+  /// Amount in paise. Never allowed to exceed the captured payment amount.
+  amount Int @db.Integer
+  currency String @default("INR") @db.VarChar(8)
+
+  status RefundStatus @default(PENDING)
+
+  /// Deterministic per order, and unique, so a duplicate attempt cannot be
+  /// recorded. Also sent to the provider as the refund `receipt`.
+  idempotencyKey String @unique @map("idempotency_key") @db.VarChar(128)
+
+  attempts Int @default(0) @db.Integer
+
+  /// The last error, truncated. Never contains credentials.
+  lastError String? @map("last_error") @db.Text
+
+  /// Set when the provider confirms the refund. Null while PENDING/PROCESSING.
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([status])
+  @@map("refunds")
+}
