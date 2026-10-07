@@ -38,6 +38,7 @@ import type { RazorpayConfig } from "@/lib/payments/razorpay/types";
 import { recordPaymentEvent } from "@/lib/payments/events";
 import { decidePaymentAction } from "@/lib/payments/decision";
 import { enqueueOrderAlert } from "@/lib/orders/service";
+import { triggerNotificationDrain } from "@/lib/notifications/trigger";
 import {
   findOrderByRazorpayOrderId,
   markOrderPaid,
@@ -173,6 +174,13 @@ export async function POST(request: NextRequest) {
       applied: outcome.applied,
       duplicate: outcome.duplicate,
     });
+
+    // A capture enqueued the owner's alert inside the transaction above. Send it
+    // now, after this response, rather than waiting for the daily safety net.
+    // Only on a real application - a duplicate or ignored event queued nothing.
+    if (outcome.applied) {
+      triggerNotificationDrain();
+    }
 
     return NextResponse.json({
       received: true,

@@ -2,6 +2,9 @@
   "name": "gotham-renewal",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -28,7 +31,8 @@
     "check:products-browser": "tsx scripts/check-products-browser.ts",
     "check:orders": "LOG_LEVEL=error NODE_OPTIONS=\"--conditions=react-server\" tsx scripts/check-orders.ts",
     "check:refunds": "LOG_LEVEL=error NODE_OPTIONS=\"--conditions=react-server\" tsx scripts/check-refunds.ts",
-    "check:database": "NODE_OPTIONS=\"--conditions=react-server\" tsx scripts/check-database.ts"
+    "check:database": "NODE_OPTIONS=\"--conditions=react-server\" tsx scripts/check-database.ts",
+    "check:deploy": "tsx scripts/check-deploy.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",

@@ -21,7 +21,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { logger } from "@/lib/logger";
-import { authorisedJobRequest } from "@/lib/jobs/auth";
+import { checkJobRequest } from "@/lib/jobs/auth";
 import { processDueNotifications } from "@/lib/notifications/worker";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +31,21 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 async function run(request: NextRequest) {
-  if (!authorisedJobRequest(request)) {
+  const auth = checkJobRequest(request);
+
+  if (auth === "unconfigured") {
+    // A deployment error, not an attack: the schedule will 401 every single run
+    // and the outbox will never drain. Orders still place, so nothing looks
+    // broken until the owner notices the alerts stopped. Make it loud.
+    logger.error(
+      "notification cron is not authenticated: neither CRON_SECRET nor JOB_RUNNER_SECRET is set, so every scheduled run is being refused and notifications will never be sent",
+    );
+    return NextResponse.json({ error: "Job authentication is not configured" }, { status: 401 });
+  }
+
+  if (auth === "unauthorised") {
+    // A secret is configured; this caller supplied the wrong one.
+    logger.warn("notification cron rejected an unauthorised request");
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
 

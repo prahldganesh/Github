@@ -1,0 +1,35 @@
+# Vercel upload exclusions.
+#
+# WHY THIS EXISTS SEPARATELY FROM .gitignore. When no .vercelignore is present,
+# the Vercel CLI falls back to .gitignore — which already excludes `.env`. But
+# that makes a security-critical property depend on a file that exists for a
+# different reason and could be edited for a different reason. A single tidy-up
+# of .gitignore could silently start uploading the database password. This file
+# states the rule directly.
+#
+# `.env` holds the Supabase password, the admin password and the session secret.
+# Production values live in Vercel's environment settings, never in the upload.
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local database (conda cluster, if ever placed here)
+pgdata/
+
+# Dependencies and build output
+node_modules/
+.next/
+generated/
+.vercel/
+
+# Test and tooling noise
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Editor and OS
+.DS_Store
+.vscode/
+CLAUDE.md

@@ -353,13 +353,23 @@ transaction pooler*, and every concurrency and durability check —
 matters because a transaction pooler is a new variable for `FOR UPDATE SKIP
 LOCKED` and row-level locking, and those guarantees are load-bearing.
 
+**Deployed and verified in production.**
+<https://gotham-renewal.vercel.app> on Vercel, with functions pinned to `bom1`
+(Mumbai) so they sit beside the database — 3ms health checks rather than the
+~1100ms a default `iad1` region produced. A real COD order was placed over
+HTTPS and traced through Supabase: order written, stock reserved, notification
+enqueued and attempted, confirmation page token-gated, and every protected
+surface refusing unauthenticated callers.
+
 The connection-parameter timezone concern is **resolved**: `DB_SESSION_UTC=false`
 means the pooler is never handed an `options` startup parameter, and
 `ALTER DATABASE postgres SET timezone='UTC'` makes UTC a property of the database
-itself. The timestamp round-trip check compares against real UTC and passes.
+itself. The timestamp round-trip check compares against real UTC and passes, in
+production as well as locally.
 
-**Not staging-verified and not production-verified.** No other external
-integration — Meta, Razorpay, Vercel, or Storage — has been exercised against
-real accounts from here. The remaining unverifiable-locally item is whether the
-CSP would break Razorpay Checkout, which is why it ships report-only. See
-`DEPLOYMENT.md`.
+**Not verified: the payment and messaging providers.** No Razorpay or WhatsApp
+credentials exist in this environment, so those integrations have never run
+against real accounts. Razorpay's *failure* path has been exercised against its
+live API (an invalid-credential call was correctly refused), and the webhook's
+signature verification is proven with real HMACs locally — but no real payment
+has been taken and no real message sent. See `DEPLOYMENT.md`.

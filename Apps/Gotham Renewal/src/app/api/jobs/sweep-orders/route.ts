@@ -15,7 +15,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { logger } from "@/lib/logger";
-import { authorisedJobRequest } from "@/lib/jobs/auth";
+import { checkJobRequest } from "@/lib/jobs/auth";
 import { sweepStalePendingOrders, STALE_PENDING_MINUTES } from "@/lib/orders/sweep";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +24,19 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 async function run(request: NextRequest) {
-  if (!authorisedJobRequest(request)) {
+  const auth = checkJobRequest(request);
+
+  if (auth === "unconfigured") {
+    // A deployment error: without a secret the schedule is refused every run, so
+    // abandoned online orders would hold their stock forever. Make it loud.
+    logger.error(
+      "sweep cron is not authenticated: neither CRON_SECRET nor JOB_RUNNER_SECRET is set, so the sweep will never run and abandoned orders will hold stock indefinitely",
+    );
+    return NextResponse.json({ error: "Job authentication is not configured" }, { status: 401 });
+  }
+
+  if (auth === "unauthorised") {
+    logger.warn("sweep cron rejected an unauthorised request");
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
 

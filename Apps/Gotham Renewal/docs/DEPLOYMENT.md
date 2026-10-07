@@ -2,6 +2,27 @@
 
 Target: **Vercel** (app) + **Supabase** (PostgreSQL). This is the runbook.
 
+## Current deployment
+
+| | |
+|---|---|
+| Production URL | **https://gotham-renewal.vercel.app** |
+| Hosting | Vercel, project `gotham-renewal`, function region **bom1 (Mumbai)** |
+| Database | Supabase Postgres, `ap-south-1` (Mumbai) |
+| Crons | daily (Hobby plan) — notifications and sweep; the notification path does not depend on them, see step 5 |
+| Deployed | 2026-10-07 |
+
+**Verified against production, not localhost:** `/api/health` returns
+`database: "up"` at ~3ms; the catalogue renders 8 products; a real COD order
+placed over HTTPS returned 201, wrote to Supabase, reserved stock, and enqueued
+its notification (attempted immediately via `after()`); the confirmation page
+404s without its token and 200s with it; and every protected surface refuses an
+unauthenticated caller (`/admin` → 307, job endpoints → 401, the webhook → 503
+until Razorpay is configured).
+
+**Not yet verified:** Razorpay and WhatsApp against real accounts — those need
+credentials this environment does not have. See step 6 and step 8.
+
 ---
 
 ## 1. Create the Supabase project
@@ -126,6 +147,59 @@ vercel --prod
 before the app compiles. Vercel Cron jobs are picked up from `vercel.json`
 automatically on a production deploy.
 
+### Set the function region to match the database
+
+**Do this before the first deploy, or every query pays a transatlantic round trip.**
+Vercel runs functions in `iad1` (Washington DC) by default, while Supabase Mumbai
+is in `bom1`. A request enters at the nearest edge (Mumbai), then executes in
+Virginia, then queries Mumbai — measuring ~1100ms per request. Pinned to `bom1`,
+the same request is ~3ms.
+
+Hobby accounts **can** set this; it is not a paid feature. The CLI has no flag for
+it, so use the API with the CLI's own token:
+
+```bash
+node -e '
+const fs=require("fs");
+const auth=JSON.parse(fs.readFileSync(process.env.HOME+"/Library/Application Support/com.vercel.cli/auth.json","utf8"));
+fetch("https://api.vercel.com/v9/projects/<PROJECT_ID>?teamId=<TEAM_ID>",{
+  method:"PATCH",
+  headers:{Authorization:"Bearer "+auth.token,"Content-Type":"application/json"},
+  body:JSON.stringify({serverlessFunctionRegion:"bom1"})
+}).then(r=>r.json()).then(p=>console.log("region:",p.serverlessFunctionRegion));
+'
+```
+
+Both IDs are in `.vercel/project.json`. **Redeploy afterwards** — the setting only
+applies to new deployments. Verify with:
+
+```bash
+curl -s -D - -o /dev/null https://your-domain/api/health | grep x-vercel-id
+# want: bom1::bom1::...   (not bom1::iad1::...)
+```
+
+### Cron schedules on the Hobby plan
+
+Vercel's Hobby plan rejects any cron expression that runs more than once a day —
+the deploy fails outright with *"Hobby accounts are limited to daily cron jobs"*.
+`vercel.json` therefore uses daily schedules, and **the notification path does not
+depend on them.**
+
+Instead, the two places that enqueue a notification drain the outbox themselves
+with Next's `after()`, which runs work *after* the response is sent:
+
+- order creation (`POST /api/orders`) for a COD order
+- the Razorpay webhook, on a capture
+
+That means an alert goes out immediately in the normal case, and the scheduled
+drain is purely a **retry safety net** for anything it could not deliver (Meta
+down, process replaced). The durability guarantee is unchanged — the job row is
+committed inside the order transaction before any of this runs, so a crash loses
+nothing.
+
+On a Pro plan the schedules can be tightened back to `* * * * *` and `0 * * * *`
+if you want a faster safety net; nothing in the code needs to change.
+
 ## 6. Point Razorpay at the webhook
 
 Razorpay dashboard → Settings → Webhooks → add:
@@ -239,7 +313,7 @@ Then walk the real flow:
 - [ ] A COD order's WhatsApp alert arrives
 
 **Operations**
-- [ ] Both cron jobs appear in the Vercel dashboard (Notifications hourly, Sweep hourly)
+- [ ] Both cron jobs appear in the Vercel dashboard (daily on Hobby — see step 5)
 - [ ] Vercel Cron env var `CRON_SECRET` is set, or the crons 401 silently
 - [ ] `LOG_LEVEL=info`; errors are visible in Vercel's log viewer
 - [ ] A database backup/point-in-time-recovery is enabled on Supabase (it is by default on paid plans — confirm on free)
@@ -264,8 +338,10 @@ be undone, write a new migration that reverses it; do not edit an applied one.
 
 Carried from the build, listed so they are decisions rather than surprises:
 
-- **Notifications can lag up to a minute** (cron granularity). The order is
-  committed immediately; only the alert waits.
+- **Notifications are sent immediately** via `after()` on order creation and on
+  webhook capture. The daily cron is only a retry safety net, so a Meta outage
+  can delay an alert by up to a day unless `npm run jobs:notifications` is run by
+  hand or the plan is upgraded and the schedule tightened.
 - **An abandoned online order holds its stock for up to an hour** before the
   sweep releases it (ADR-0003).
 - **A payment arriving after abandonment** leaves the order `CANCELLED` + `PAID`,

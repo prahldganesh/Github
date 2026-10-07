@@ -22,6 +22,7 @@ import {
 } from "@/lib/orders/service";
 import { logger, errorFields } from "@/lib/logger";
 import { rateLimit } from "@/lib/rate-limit";
+import { triggerNotificationDrain } from "@/lib/notifications/trigger";
 
 export async function POST(request: NextRequest) {
   // A cheap guard against order spam. Distributed when Upstash is configured;
@@ -53,6 +54,15 @@ export async function POST(request: NextRequest) {
   // COD | RAZORPAY, so nothing else can reach the service.
   try {
     const result = await createOrder(parsed.data);
+
+    // A COD order enqueued its owner alert inside the transaction, so send it
+    // now rather than waiting for the daily safety-net drain. `after()` runs
+    // this once the response is on its way out, so the customer's checkout is
+    // never held up by Meta. A RAZORPAY order queues nothing here - its alert
+    // is enqueued by the webhook on capture, and drained there.
+    if (result.ok && result.order.paymentMethod === "COD") {
+      triggerNotificationDrain();
+    }
 
     if (!result.ok) {
       // A 503 from the Razorpay branch still carries the order it created, so

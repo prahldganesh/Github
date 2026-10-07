@@ -74,6 +74,7 @@ Rules for a parallel task:
 14 deployment            ✅ docs/DEPLOYMENT.md + pooler/migration split + build hook
 15 testing + hardening   ✅ error boundaries, refund surfacing, order integration test
 16 production-readiness  ✅ explicit refund workflow, distributed rate limiting, optimistic stock concurrency, image uploads, security headers
+17 deployment            ✅ LIVE on Vercel (bom1) + Supabase Mumbai; COD verified in production
 ```
 
 **All fifteen phases are complete.** What remains is external configuration, not
