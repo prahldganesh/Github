@@ -39,6 +39,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/products" className="text-slate-600 hover:text-slate-900">
               Products
             </Link>
+            <Link href="/admin/customers" className="text-slate-600 hover:text-slate-900">
+              Customers
+            </Link>
+            <Link href="/admin/refunds" className="text-slate-600 hover:text-slate-900">
+              Refunds
+            </Link>
+            <Link href="/admin/notifications" className="text-slate-600 hover:text-slate-900">
+              Notifications
+            </Link>
           </nav>
 
           <form action={logoutAction}>

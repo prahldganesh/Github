@@ -14,17 +14,11 @@ import { requireAdmin } from "@/lib/auth/guard";
 import { listOrders, findPaidButCancelledOrders } from "@/lib/orders/repository";
 import { formatPaise } from "@/lib/money";
 import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS } from "@/lib/orders/labels";
+import { StatusPill } from "@/components/admin/status-pill";
+import { formatDateTime } from "@/lib/admin/format";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Orders" };
-
-function formatDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Asia/Kolkata",
-  }).format(date);
-}
 
 type PageProps = { searchParams: Promise<{ filter?: string }> };
 
@@ -85,7 +79,7 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
                     <span className="text-slate-900">{order.customerName}</span>
                     <span className="block text-xs text-slate-500">{order.customerPhone}</span>
                   </td>
-                  <td className="px-4 py-3 text-slate-600">{formatDate(order.createdAt)}</td>
+                  <td className="px-4 py-3 text-slate-600">{formatDateTime(order.createdAt)}</td>
                   <td className="px-4 py-3 font-medium">{formatPaise(order.total)}</td>
                   <td className="px-4 py-3">
                     <StatusPill
@@ -106,26 +100,5 @@ export default async function AdminOrdersPage({ searchParams }: PageProps) {
         </div>
       )}
     </div>
-  );
-}
-
-export function StatusPill({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: "good" | "warn" | "bad" | "neutral";
-}) {
-  const tones = {
-    good: "bg-green-100 text-green-800",
-    warn: "bg-amber-100 text-amber-800",
-    bad: "bg-red-100 text-red-800",
-    neutral: "bg-slate-100 text-slate-700",
-  } as const;
-
-  return (
-    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${tones[tone]}`}>
-      {label}
-    </span>
   );
 }

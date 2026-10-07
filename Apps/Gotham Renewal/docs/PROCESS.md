@@ -75,6 +75,7 @@ Rules for a parallel task:
 15 testing + hardening   ✅ error boundaries, refund surfacing, order integration test
 16 production-readiness  ✅ explicit refund workflow, distributed rate limiting, optimistic stock concurrency, image uploads, security headers
 17 deployment            ✅ LIVE on Vercel (bom1) + Supabase Mumbai; COD verified in production
+18 admin visibility      ✅ notifications/outbox, refunds, customers views
 ```
 
 **All fifteen phases are complete.** What remains is external configuration, not
@@ -108,7 +109,8 @@ Everything here is a deliberate deferral with its reasoning, not an oversight.
   admin action (ADR-0011), deliberately not automatic.
 - **Refunds are full-order only.** Partial refunds, disputes and chargebacks are
   out of scope. A refund in the `PROCESSING` state must be reconciled, not
-  retried.
+  retried — the refunds view surfaces these and offers the reconcile action
+  inline.
 - **The rate limiter falls back to in-memory if Upstash is unconfigured.** It
   logs which backend is active at startup. In-memory is per-instance, so on
   Vercel the real limit is multiplied by the number of warm instances. Set
@@ -125,6 +127,11 @@ Everything here is a deliberate deferral with its reasoning, not an oversight.
   call was made to Razorpay's live API (which correctly refused it), but the
   dashboard webhook itself must be configured and a test-mode payment completed
   before go-live. Razorpay blacklists `localhost`/`ngrok.io`; use cloudflared.
+- **Admin time handling.** "Started 3d ago" on the refunds view uses `Date.now()`
+  at render, so it is relative to the viewer's clock rather than the server's.
+  Correct in practice (they are the same machine's clock for a single admin), but
+  worth knowing if the server clock is ever skewed.
+
 - ~~`DB_SESSION_UTC` unverified on Supabase~~ — **RESOLVED (verified in place).**
   Supabase Mumbai runs UTC. `DB_SESSION_UTC=false` is set (the pooler is never
   handed an `options` startup parameter) and `ALTER DATABASE postgres SET

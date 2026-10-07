@@ -180,3 +180,36 @@ export async function countNotificationsByStatus(): Promise<Record<string, numbe
   const rows = await prisma.notification.groupBy({ by: ["status"], _count: { _all: true } });
   return Object.fromEntries(rows.map((row) => [row.status, row._count._all]));
 }
+
+/**
+ * Recent notifications, newest first, for the admin outbox view.
+ *
+ * The order relation is included so the table can link to the order an alert
+ * belongs to - a failed alert is useless to the owner if they cannot see which
+ * order it was about.
+ *
+ * This is the view that closes the biggest blind spot in the system: until now,
+ * a notification that failed was only discoverable by reading the database
+ * directly, so "the owner got no alert" was invisible.
+ */
+export type NotificationWithOrder = Notification & {
+  order: { id: string; orderNumber: string } | null;
+};
+
+export async function listNotifications(limit = 100): Promise<NotificationWithOrder[]> {
+  return prisma.notification.findMany({
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { order: { select: { id: true, orderNumber: true } } },
+  });
+}
+
+/** Only the ones that failed - what the owner actually needs to act on. */
+export async function listFailedNotifications(limit = 100): Promise<NotificationWithOrder[]> {
+  return prisma.notification.findMany({
+    where: { status: "FAILED" },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { order: { select: { id: true, orderNumber: true } } },
+  });
+}

@@ -353,3 +353,58 @@ export async function countPaidButCancelledOrders(): Promise<number> {
     where: { orderStatus: "CANCELLED", paymentStatus: "PAID" },
   });
 }
+
+/**
+ * Customers, derived from their orders.
+ *
+ * There is no customer table, and that is deliberate: a customer places an order
+ * and gives their details at that moment. The phone number is the natural key
+ * (validation normalises it to the last 10 digits, so `+91…` and `0…` variants
+ * of one number collapse together).
+ *
+ * WHY RAW SQL rather than `groupBy`. Prisma's `groupBy` can return the
+ * aggregates - count, sum, min, max - but not the customer's *name*, because
+ * name is not grouped. Fetching it would mean a second query per customer
+ * (an N+1). Postgres can do it in one pass with `array_agg(... ORDER BY
+ * created_at DESC)[1]`, which picks the name from their most recent order. That
+ * also means a customer who gave a fuller name later is shown by that name.
+ *
+ * The value excludes cancelled orders: a cancelled order is not revenue, and
+ * counting it would make a customer look more valuable than they are. The order
+ * count still includes them, so a cancelled order is visible in the history
+ * rather than hidden.
+ */
+export type CustomerSummary = {
+  phone: string;
+  name: string;
+  email: string | null;
+  orderCount: number;
+  valuePaise: number;
+  firstOrderAt: Date;
+  lastOrderAt: Date;
+};
+
+export async function listCustomers(limit = 100): Promise<CustomerSummary[]> {
+  return prisma.$queryRaw<CustomerSummary[]>`
+    SELECT
+      customer_phone AS "phone",
+      (array_agg(customer_name ORDER BY created_at DESC))[1] AS "name",
+      (array_agg(customer_email ORDER BY created_at DESC))[1] AS "email",
+      count(*)::int AS "orderCount",
+      coalesce(sum(total) FILTER (WHERE order_status <> 'CANCELLED'), 0)::int AS "valuePaise",
+      min(created_at) AS "firstOrderAt",
+      max(created_at) AS "lastOrderAt"
+    FROM orders
+    GROUP BY customer_phone
+    ORDER BY max(created_at) DESC
+    LIMIT ${limit}::int
+  `;
+}
+
+/** Every order placed by one phone number, newest first. */
+export async function listOrdersForCustomer(phone: string): Promise<Order[]> {
+  return prisma.order.findMany({
+    where: { customerPhone: phone },
+    orderBy: { createdAt: "desc" },
+  });
+}

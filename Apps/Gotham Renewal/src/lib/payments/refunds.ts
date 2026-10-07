@@ -119,6 +119,50 @@ export async function latestRefundForOrder(orderId: string): Promise<Refund | nu
 }
 
 /**
+ * Recent refunds, newest first, for the admin refunds view.
+ *
+ * Refunds were already visible one order at a time, but there was no way to ask
+ * "which refunds are outstanding?". That matters because `PROCESSING` is a state
+ * a human must resolve - it means the provider never confirmed, so the money may
+ * or may not have moved - and it is invisible if you have to open orders to find
+ * it.
+ *
+ * The order relation lets the table link back to the order concerned.
+ */
+export type RefundWithOrder = Refund & {
+  order: { id: string; orderNumber: string } | null;
+};
+
+export async function listRefunds(limit = 100): Promise<RefundWithOrder[]> {
+  return prisma.refund.findMany({
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { order: { select: { id: true, orderNumber: true } } },
+  });
+}
+
+/**
+ * Refunds that need a human: in flight but unconfirmed, or failed.
+ *
+ * Deliberately not `SUCCEEDED` (done) and not `PENDING` (not yet sent, which the
+ * service handles on its own).
+ */
+export async function listRefundsNeedingAttention(limit = 100): Promise<RefundWithOrder[]> {
+  return prisma.refund.findMany({
+    where: { status: { in: ["PROCESSING", "FAILED"] } },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: { order: { select: { id: true, orderNumber: true } } },
+  });
+}
+
+/** Counts by status, for the dashboard summary. */
+export async function countRefundsByStatus(): Promise<Record<string, number>> {
+  const rows = await prisma.refund.groupBy({ by: ["status"], _count: { _all: true } });
+  return Object.fromEntries(rows.map((row) => [row.status, row._count._all]));
+}
+
+/**
  * Create the local attempt row, or report why it cannot be created.
  *
  * THE INSERT IS THE LOCK. Two concurrent admin clicks both reach here; both try

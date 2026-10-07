@@ -38,9 +38,18 @@ URL — `/products` is unchanged.
 - The product **detail** page loses its skeleton and shows the previous page
   until the new one is ready. That is the correct trade: a correct status code
   matters more than a spinner, and a product page is a fast query.
-- Admin pages keep their loading file, because `notFound()` there is reached only
-  for a malformed order or product id — an admin pressing a stale link — where a
-  soft 404 is acceptable. If that changes, the same restructuring applies.
+- **Update (Phase B):** the admin `loading.tsx` has since been **removed**. The
+  original reasoning above — that an admin soft 404 is harmless because it is only
+  reached from a stale link — stopped holding once `/admin/customers/[phone]` was
+  added, where "no such customer" is a *normal* outcome rather than a mistake.
+  Measured: all four admin detail routes that call `notFound()`
+  (`/admin/orders/[id]`, `/admin/products/[id]`, `/admin/customers/[phone]`, and a
+  malformed id) returned **200**. Removing the single loading file made all four
+  return **404**, with every real page still 200.
+  The cost is the admin skeleton; correctness of the status code is worth more
+  than a brief placeholder on pages that already resolve in milliseconds. Keeping
+  both would mean a route group per list page (as `products/(list)/` does), which
+  is more restructuring than the skeleton is worth.
 - The rule generalises: **if a segment can `notFound()`, do not give it an
   ancestor `loading.tsx`.** Verify with
   `curl -o /dev/null -w '%{http_code}'` on a known-missing path after adding one.
